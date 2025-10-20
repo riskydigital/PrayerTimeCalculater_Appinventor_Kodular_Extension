@@ -1,13 +1,17 @@
-package com.riskydigital.PTC; // Sesuai dengan error runtime
+package com.riskydigital.PTC; // Sesuai dengan nama paket utama
 
 import com.google.appinventor.components.annotations.SimpleFunction;
 import com.google.appinventor.components.annotations.SimpleObject;
 import com.google.appinventor.components.annotations.DesignerComponent;
 import com.google.appinventor.components.annotations.UsesPermissions;
+import com.google.appinventor.components.annotations.Options;      
 import com.google.appinventor.components.common.ComponentCategory;
 import com.google.appinventor.components.runtime.AndroidNonvisibleComponent;
 import com.google.appinventor.components.runtime.ComponentContainer;
 import com.google.appinventor.components.runtime.util.YailList;
+
+// Import Helper Enum dari paket baru
+import com.riskydigital.PTC.helpers.PrayerMethods; 
 
 import java.util.Calendar;
 import java.util.GregorianCalendar;
@@ -16,12 +20,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.text.SimpleDateFormat;
 
+
 /**
  * Ekstensi untuk menghitung waktu sholat, waktu matahari, dan arah Kiblat.
  * Versi ini mendukung inisialisasi state sekali di awal dan perhitungan waktu individual, serta kalkulasi bulanan dan tahunan.
  */
 @DesignerComponent(
-    version = 30, // Versi dinaikkan sesuai permintaan
+    version = 100, // Versi dinaikkan
     description = "Kalkulator Waktu Sholat (Fajr, Dhuhr, Asr, Maghrib, Isha, Dhuha, Kulminasi, Terbit/Tenggelam) dan Arah Kiblat. Mendukung preset, sudut kustom, inisialisasi sekali, perhitungan individual, bulanan, dan tahunan.",
     category = ComponentCategory.EXTENSION,
     nonVisible = true,
@@ -29,14 +34,7 @@ import java.text.SimpleDateFormat;
 @SimpleObject(external = true)
 @UsesPermissions(permissionNames = "android.permission.INTERNET")
 public class PTC extends AndroidNonvisibleComponent { 
-
-    // --- Konstanta String untuk Internal Logic ---
-    public static final String METHOD_MWL = "MWL"; 
-    public static final String METHOD_ISNA = "ISNA"; 
-    public static final String METHOD_EGYPT = "EGYPT"; 
-    public static final String METHOD_KARACHI = "KARACHI"; 
-    public static final String METHOD_CUSTOM = "CUSTOM"; 
-
+    
     // --- Variabel State Perhitungan ---
     private static final double SUNRISE_SUNSET_ANGLE = 0.833; 
     private static final double DHUHA_ANGLE = 3.0; 
@@ -45,7 +43,7 @@ public class PTC extends AndroidNonvisibleComponent {
     private double currentFajrAngle = 18.0; 
     private double currentIshaAngle = 17.0;
     private int currentAsrFactor = 1; // 1=Shafii (default), 2=Hanafi
-    private String currentMethod = METHOD_MWL; 
+    private String currentMethod = PrayerMethods.MWL.toUnderlyingValue(); // Menggunakan nilai enum dari file helper
     
     // State yang diatur sekali oleh SetLocationDateAndInit atau CalculateAllTimes
     private double lat = Double.NaN;
@@ -277,7 +275,7 @@ public class PTC extends AndroidNonvisibleComponent {
 
     @SimpleFunction(description = "Menghitung waktu Midday (Kulminasi Matahari) berdasarkan pengaturan terakhir.")
     public String CalculateMiddayTime() {
-        return floatToTime(getRawMiddayTime());
+        return calculateDayTimesArray(day, month, year)[8];
     }
 
     @SimpleFunction(description = "Menghitung waktu Subuh (Fajr) berdasarkan pengaturan terakhir.")
@@ -321,7 +319,7 @@ public class PTC extends AndroidNonvisibleComponent {
     }
 
 
-    // --- Fungsi Kalkulasi Bulanan dan Tahunan (Baru) ---
+    // --- Fungsi Kalkulasi Bulanan dan Tahunan ---
 
     /** Mendapatkan jumlah hari dalam bulan tertentu. */
     private int getDaysInMonth(int m, int y) {
@@ -414,77 +412,48 @@ public class PTC extends AndroidNonvisibleComponent {
         return YailList.makeList(yearlyList);
     }
     
-    // --- Preset Metode Sholat (Tidak Berubah) ---
+    // --- Preset Metode Sholat ---
     
     /** Menyetel variabel state berdasarkan preset metode. */
     private void applyMethod(String method) {
         currentMethod = method;
         switch (method) {
-            case METHOD_MWL: // Muslim World League (Default)
+            case "MWL": // Muslim World League (Default)
                 currentFajrAngle = 18.0;
                 currentIshaAngle = 17.0;
                 currentAsrFactor = 1; // Shafi'i
                 break;
-            case METHOD_ISNA: // Islamic Society of North America
+            case "ISNA": // Islamic Society of North America
                 currentFajrAngle = 15.0;
                 currentIshaAngle = 15.0;
                 currentAsrFactor = 1;
                 break;
-            case METHOD_EGYPT: // Egyptian General Authority of Survey
+            case "EGYPT": // Egyptian General Authority of Survey
                 currentFajrAngle = 19.5;
                 currentIshaAngle = 17.5;
                 currentAsrFactor = 1;
                 break;
-            case METHOD_KARACHI: // University of Islamic Sciences, Karachi
+            case "KARACHI": // University of Islamic Sciences, Karachi
                 currentFajrAngle = 18.0;
                 currentIshaAngle = 18.0;
                 currentAsrFactor = 1;
                 break;
-            case METHOD_CUSTOM:
+            case "CUSTOM":
                 break;
             default:
-                applyMethod(METHOD_MWL);
+                // Menggunakan nilai MWL dari Enum Helper
+                applyMethod(PrayerMethods.MWL.toUnderlyingValue());
                 break;
         }
     }
     
-    // --- Fungsi Publik untuk App Inventor (Blok Konstanta) ---
+    // --- Fungsi Publik untuk App Inventor ---
 
-    /** Mengembalikan konstanta string untuk metode Muslim World League (MWL). */
-    @SimpleFunction(description = "Konstanta string untuk metode Muslim World League (MWL).")
-    public String MethodMWL() {
-        return METHOD_MWL;
-    }
-    
-    /** Mengembalikan konstanta string untuk metode Islamic Society of North America (ISNA). */
-    @SimpleFunction(description = "Konstanta string untuk metode ISNA.")
-    public String MethodISNA() {
-        return METHOD_ISNA;
-    }
-    
-    /** Mengembalikan konstanta string untuk metode Egyptian General Authority of Survey (EGYPT). */
-    @SimpleFunction(description = "Konstanta string untuk metode EGYPT.")
-    public String MethodEGYPT() {
-        return METHOD_EGYPT;
-    }
-    
-    /** Mengembalikan konstanta string untuk metode University of Islamic Sciences, Karachi (KARACHI). */
-    @SimpleFunction(description = "Konstanta string untuk metode KARACHI.")
-    public String MethodKARACHI() {
-        return METHOD_KARACHI;
-    }
-    
-    /** Mengembalikan konstanta string untuk metode Kustom (CUSTOM). */
-    @SimpleFunction(description = "Konstanta string untuk metode Kustom (CUSTOM).")
-    public String MethodCUSTOM() {
-        return METHOD_CUSTOM;
-    }
-
-    /** * Mengatur metode perhitungan waktu sholat yang akan digunakan. 
-     * Input harus berupa Blok Metode (misalnya MethodMWL()). Default adalah MWL.
+    /** * Mengatur metode perhitungan waktu sholat. 
+     * Input sekarang berupa dropdown (blok helper) yang berisi MWL, ISNA, dst.
      */
-    @SimpleFunction(description = "Mengatur metode perhitungan waktu sholat. Gunakan Blok Fungsi Method... sebagai input. Default adalah MWL.")
-    public void SetCalculationMethod(String method) {
+    @SimpleFunction(description = "Mengatur metode perhitungan waktu sholat. Gunakan dropdown untuk memilih metode. Default adalah MWL.")
+    public void SetCalculationMethod(@Options(PrayerMethods.class) String method) {
         applyMethod(method);
     }
     
@@ -500,7 +469,7 @@ public class PTC extends AndroidNonvisibleComponent {
         currentFajrAngle = fajrAngle;
         currentIshaAngle = ishaAngle;
         currentAsrFactor = asrFactor;
-        currentMethod = METHOD_CUSTOM;
+        currentMethod = PrayerMethods.CUSTOM.toUnderlyingValue();
     }
     
     /** Fungsi Debug: Mengembalikan sudut Fajr dan Isha yang sedang aktif serta faktor Asr. */
