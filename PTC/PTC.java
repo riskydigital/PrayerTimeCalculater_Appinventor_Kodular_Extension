@@ -12,14 +12,17 @@ import com.google.appinventor.components.runtime.util.YailList;
 import java.util.Calendar;
 import java.util.GregorianCalendar;
 import java.util.Locale;
+import java.util.ArrayList;
+import java.util.List;
+import java.text.SimpleDateFormat;
 
 /**
  * Ekstensi untuk menghitung waktu sholat, waktu matahari, dan arah Kiblat.
- * Versi ini mendukung inisialisasi state sekali di awal dan perhitungan waktu individual.
+ * Versi ini mendukung inisialisasi state sekali di awal dan perhitungan waktu individual, serta kalkulasi bulanan dan tahunan.
  */
 @DesignerComponent(
-    version = 20, // Versi dinaikkan sesuai permintaan
-    description = "Kalkulator Waktu Sholat (Fajr, Dhuhr, Asr, Maghrib, Isha, Dhuha, Kulminasi, Terbit/Tenggelam) dan Arah Kiblat. Mendukung preset, sudut kustom, inisialisasi sekali, dan perhitungan individual.",
+    version = 30, // Versi dinaikkan sesuai permintaan
+    description = "Kalkulator Waktu Sholat (Fajr, Dhuhr, Asr, Maghrib, Isha, Dhuha, Kulminasi, Terbit/Tenggelam) dan Arah Kiblat. Mendukung preset, sudut kustom, inisialisasi sekali, perhitungan individual, bulanan, dan tahunan.",
     category = ComponentCategory.EXTENSION,
     nonVisible = true,
     iconName = "images/extension.png")
@@ -213,6 +216,62 @@ public class PTC extends AndroidNonvisibleComponent {
         
         return timeTransit(0.0) + H / 15.0;
     }
+
+    /**
+     * Helper: Melakukan seluruh perhitungan waktu sholat untuk satu hari spesifik
+     * menggunakan lat/lon/timezone/angles yang tersimpan dalam state.
+     * Hasil dikembalikan sebagai array String (10 item).
+     */
+    private String[] calculateDayTimesArray(int d, int m, int y) {
+        // Simpan state tanggal lama
+        int originalDay = this.day;
+        int originalMonth = this.month;
+        int originalYear = this.year;
+
+        // Set state tanggal baru untuk perhitungan
+        this.day = d;
+        this.month = m;
+        this.year = y;
+
+        // --- Kalkulasi Raw Times ---
+        double midday = getRawMiddayTime();
+        
+        // Initial Raw Times
+        double fajrRaw = sunAngleTime(-currentFajrAngle, midday, -1); 
+        double sunriseRaw = sunAngleTime(-SUNRISE_SUNSET_ANGLE, midday, -1);
+        double dhuhaRaw = sunAngleTime(-DHUHA_ANGLE, midday, -1);
+        double dhuhrRaw = midday; 
+        double asrRaw = asrTime(midday);
+        double maghribRaw = sunAngleTime(-SUNRISE_SUNSET_ANGLE, midday, +1);
+        double ishaRaw = sunAngleTime(-currentIshaAngle, midday, +1); 
+
+        // 3. Iterasi untuk Akurasi
+        for (int i = 0; i < 3; i++) {
+            fajrRaw = sunAngleTime(-currentFajrAngle, fixTime(fajrRaw), -1);
+            asrRaw = asrTime(fixTime(asrRaw));
+            ishaRaw = sunAngleTime(-currentIshaAngle, fixTime(ishaRaw), +1);
+        }
+        
+        // --- Pembentukan Hasil (10 item waktu) ---
+        String[] results = new String[10];
+        results[0] = floatToTime(fajrRaw);
+        results[1] = floatToTime(sunriseRaw);
+        results[2] = floatToTime(dhuhaRaw);
+        results[3] = floatToTime(dhuhrRaw);
+        results[4] = floatToTime(asrRaw);
+        results[5] = floatToTime(maghribRaw); // Maghrib = Sunset
+        results[6] = floatToTime(maghribRaw); // Sunset
+        results[7] = floatToTime(ishaRaw);
+        results[8] = floatToTime(midday);
+        results[9] = String.format(Locale.US, "%.2f", fixAngle(calculateQibla(lat, lon)));
+
+        // Kembalikan state tanggal ke nilai semula
+        this.day = originalDay;
+        this.month = originalMonth;
+        this.year = originalYear;
+
+        return results;
+    }
     
     // --- Public Individual Calculation Functions (Menggunakan State) ---
 
@@ -223,71 +282,138 @@ public class PTC extends AndroidNonvisibleComponent {
 
     @SimpleFunction(description = "Menghitung waktu Subuh (Fajr) berdasarkan pengaturan terakhir.")
     public String CalculateFajrTime() {
-        double midday = getRawMiddayTime();
-        double rawTime = sunAngleTime(-currentFajrAngle, midday, -1);
-        
-        // Iteration
-        for (int i = 0; i < 3; i++) {
-            rawTime = sunAngleTime(-currentFajrAngle, fixTime(rawTime), -1);
-        }
-        return floatToTime(rawTime);
+        return calculateDayTimesArray(day, month, year)[0];
     }
 
     @SimpleFunction(description = "Menghitung waktu Terbit Matahari (Sunrise) berdasarkan pengaturan terakhir.")
     public String CalculateSunriseTime() {
-        double midday = getRawMiddayTime();
-        return floatToTime(sunAngleTime(-SUNRISE_SUNSET_ANGLE, midday, -1));
+        return calculateDayTimesArray(day, month, year)[1];
     }
     
     @SimpleFunction(description = "Menghitung waktu Dhuha berdasarkan pengaturan terakhir.")
     public String CalculateDhuhaTime() {
-        double midday = getRawMiddayTime();
-        return floatToTime(sunAngleTime(-DHUHA_ANGLE, midday, -1));
+        return calculateDayTimesArray(day, month, year)[2];
     }
 
     @SimpleFunction(description = "Menghitung waktu Zuhur (Dhuhr) berdasarkan pengaturan terakhir. Sama dengan Midday.")
     public String CalculateDhuhrTime() {
-        return floatToTime(getRawMiddayTime());
+        return calculateDayTimesArray(day, month, year)[3];
     }
 
     @SimpleFunction(description = "Menghitung waktu Ashar (Asr) berdasarkan pengaturan terakhir.")
     public String CalculateAsrTime() {
-        double midday = getRawMiddayTime();
-        double rawTime = asrTime(midday);
-        
-        // Iteration
-        for (int i = 0; i < 3; i++) {
-            rawTime = asrTime(fixTime(rawTime));
-        }
-        return floatToTime(rawTime);
+        return calculateDayTimesArray(day, month, year)[4];
     }
 
     @SimpleFunction(description = "Menghitung waktu Maghrib berdasarkan pengaturan terakhir. Sama dengan Sunset.")
     public String CalculateMaghribTime() {
-        double midday = getRawMiddayTime();
-        // Maghrib is equal to Sunset
-        return floatToTime(sunAngleTime(-SUNRISE_SUNSET_ANGLE, midday, +1));
+        return calculateDayTimesArray(day, month, year)[5];
     }
 
     @SimpleFunction(description = "Menghitung waktu Tenggelam Matahari (Sunset) berdasarkan pengaturan terakhir.")
     public String CalculateSunsetTime() {
-        double midday = getRawMiddayTime();
-        return floatToTime(sunAngleTime(-SUNRISE_SUNSET_ANGLE, midday, +1));
+        return calculateDayTimesArray(day, month, year)[6];
     }
     
     @SimpleFunction(description = "Menghitung waktu Isya (Isha) berdasarkan pengaturan terakhir.")
     public String CalculateIshaTime() {
-        double midday = getRawMiddayTime();
-        double rawTime = sunAngleTime(-currentIshaAngle, midday, +1);
-        
-        // Iteration
-        for (int i = 0; i < 3; i++) {
-            rawTime = sunAngleTime(-currentIshaAngle, fixTime(rawTime), +1);
-        }
-        return floatToTime(rawTime);
+        return calculateDayTimesArray(day, month, year)[7];
     }
 
 
+    // --- Fungsi Kalkulasi Bulanan dan Tahunan (Baru) ---
+
+    /** Mendapatkan jumlah hari dalam bulan tertentu. */
+    private int getDaysInMonth(int m, int y) {
+        Calendar tempCal = new GregorianCalendar(y, m - 1, 1);
+        return tempCal.getActualMaximum(Calendar.DAY_OF_MONTH);
+    }
+    
+    /** Membuat header kolom untuk output list. */
+    private YailList createHeaderList() {
+        return YailList.makeList(new String[]{
+            "Tanggal", 
+            "Fajr", 
+            "Sunrise", 
+            "Dhuha", 
+            "Dhuhr", 
+            "Asr", 
+            "Maghrib", 
+            "Sunset", 
+            "Isha", 
+            "Midday", 
+            "Qibla"
+        });
+    }
+
+    /**
+     * Menghitung waktu sholat untuk semua hari dalam satu bulan.
+     * @param targetMonth Bulan yang ditargetkan (1-12).
+     * @param targetYear Tahun yang ditargetkan.
+     * @return YailList of YailList, dengan baris pertama sebagai header.
+     */
+    @SimpleFunction(description = "Menghitung waktu sholat untuk semua hari dalam satu bulan. Mengembalikan list of lists dengan header.")
+    public YailList CalculateMonthlyTimes(int targetMonth, int targetYear) {
+        List<Object> monthlyList = new ArrayList<>();
+        monthlyList.add(createHeaderList()); // Tambahkan header
+
+        int daysInMonth = getDaysInMonth(targetMonth, targetYear);
+        SimpleDateFormat dateFormatter = new SimpleDateFormat("dd-MM-yyyy", Locale.US);
+
+        for (int d = 1; d <= daysInMonth; d++) {
+            // Set tanggal sementara untuk perhitungan
+            Calendar currentDayCal = new GregorianCalendar(targetYear, targetMonth - 1, d);
+            String dateStr = dateFormatter.format(currentDayCal.getTime());
+
+            // Lakukan perhitungan
+            String[] dailyTimes = calculateDayTimesArray(d, targetMonth, targetYear);
+            
+            // Gabungkan Tanggal + Waktu
+            List<String> row = new ArrayList<>();
+            row.add(dateStr);
+            for (String time : dailyTimes) {
+                row.add(time);
+            }
+            monthlyList.add(YailList.makeList(row));
+        }
+
+        return YailList.makeList(monthlyList);
+    }
+
+    /**
+     * Menghitung waktu sholat untuk semua hari dalam satu tahun.
+     * @param targetYear Tahun yang ditargetkan.
+     * @return YailList of YailList, dengan baris pertama sebagai header.
+     */
+    @SimpleFunction(description = "Menghitung waktu sholat untuk semua hari dalam satu tahun. Mengembalikan list of lists dengan header.")
+    public YailList CalculateYearlyTimes(int targetYear) {
+        List<Object> yearlyList = new ArrayList<>();
+        yearlyList.add(createHeaderList()); // Tambahkan header
+
+        SimpleDateFormat dateFormatter = new SimpleDateFormat("dd-MM-yyyy", Locale.US);
+
+        for (int m = 1; m <= 12; m++) {
+            int daysInMonth = getDaysInMonth(m, targetYear);
+            for (int d = 1; d <= daysInMonth; d++) {
+                // Set tanggal sementara untuk perhitungan
+                Calendar currentDayCal = new GregorianCalendar(targetYear, m - 1, d);
+                String dateStr = dateFormatter.format(currentDayCal.getTime());
+
+                // Lakukan perhitungan
+                String[] dailyTimes = calculateDayTimesArray(d, m, targetYear);
+                
+                // Gabungkan Tanggal + Waktu
+                List<String> row = new ArrayList<>();
+                row.add(dateStr);
+                for (String time : dailyTimes) {
+                    row.add(time);
+                }
+                yearlyList.add(YailList.makeList(row));
+            }
+        }
+        return YailList.makeList(yearlyList);
+    }
+    
     // --- Preset Metode Sholat (Tidak Berubah) ---
     
     /** Menyetel variabel state berdasarkan preset metode. */
@@ -402,44 +528,11 @@ public class PTC extends AndroidNonvisibleComponent {
         // 1. Inisialisasi State (agar perhitungan individual selanjutnya valid)
         SetLocationDateAndInit(latitude, longitude, timezone, day, month, year);
 
-        // 2. Kalkulasi Raw Times
-        double midday = getRawMiddayTime();
-        
-        // Initial Raw Times
-        double fajrRaw = sunAngleTime(-currentFajrAngle, midday, -1); 
-        double sunriseRaw = sunAngleTime(-SUNRISE_SUNSET_ANGLE, midday, -1);
-        double dhuhaRaw = sunAngleTime(-DHUHA_ANGLE, midday, -1);
-        double dhuhrRaw = midday; 
-        double asrRaw = asrTime(midday);
-        double maghribRaw = sunAngleTime(-SUNRISE_SUNSET_ANGLE, midday, +1);
-        double sunsetRaw = maghribRaw; // Sunset is Maghrib
-        double ishaRaw = sunAngleTime(-currentIshaAngle, midday, +1); 
+        // 2. Kalkulasi Raw Times (Ambil dari fungsi helper)
+        String[] dailyTimes = calculateDayTimesArray(day, month, year);
 
-        // 3. Iterasi untuk Akurasi
-        for (int i = 0; i < 3; i++) {
-            fajrRaw = sunAngleTime(-currentFajrAngle, fixTime(fajrRaw), -1);
-            asrRaw = asrTime(fixTime(asrRaw));
-            ishaRaw = sunAngleTime(-currentIshaAngle, fixTime(ishaRaw), +1);
-        }
-        
-        // 4. Arah Kiblat
-        double qiblaAngle = calculateQibla(latitude, longitude);
-
-        // --- 5. Pembentukan Hasil ---
-        String[] results = {
-            floatToTime(fajrRaw), 
-            floatToTime(sunriseRaw), 
-            floatToTime(dhuhaRaw), 
-            floatToTime(dhuhrRaw), 
-            floatToTime(asrRaw), 
-            floatToTime(maghribRaw), 
-            floatToTime(sunsetRaw), 
-            floatToTime(ishaRaw), 
-            floatToTime(midday), 
-            String.format(Locale.US, "%.2f", fixAngle(qiblaAngle))
-        };
-        
-        return YailList.makeList(results);
+        // --- 3. Pembentukan Hasil ---
+        return YailList.makeList(dailyTimes);
     }
     
     /**
