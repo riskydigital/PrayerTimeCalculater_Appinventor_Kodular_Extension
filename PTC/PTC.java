@@ -10,8 +10,9 @@ import com.google.appinventor.components.runtime.AndroidNonvisibleComponent;
 import com.google.appinventor.components.runtime.ComponentContainer;
 import com.google.appinventor.components.runtime.util.YailList;
 
-// Import Helper Enum dari paket baru
+// Import Helper Enums dari paket baru
 import com.riskydigital.PTC.helpers.PrayerMethods; 
+import com.riskydigital.PTC.helpers.HighLatAdjustment; 
 
 import java.util.Calendar;
 import java.util.GregorianCalendar;
@@ -26,8 +27,8 @@ import java.text.SimpleDateFormat;
  * Versi ini mendukung inisialisasi state sekali di awal dan perhitungan waktu individual, serta kalkulasi bulanan dan tahunan.
  */
 @DesignerComponent(
-    version = 100, // Versi dinaikkan
-    description = "Kalkulator Waktu Sholat (Fajr, Dhuhr, Asr, Maghrib, Isha, Dhuha, Kulminasi, Terbit/Tenggelam) dan Arah Kiblat. Mendukung preset, sudut kustom, inisialisasi sekali, perhitungan individual, bulanan, dan tahunan.",
+    version = 120, // Versi dinaikkan untuk akurasi detik
+    description = "Kalkulator Waktu Sholat (Fajr, Dhuhr, Asr, Maghrib, Isha, Dhuha, Kulminasi, Terbit/Tenggelam) dan Arah Kiblat. Mendukung preset, sudut kustom, inisialisasi sekali, perhitungan individual, bulanan, dan tahunan, serta penyesuaian lintang tinggi. Akurasi waktu hingga detik.",
     category = ComponentCategory.EXTENSION,
     nonVisible = true,
     iconName = "images/extension.png")
@@ -43,7 +44,8 @@ public class PTC extends AndroidNonvisibleComponent {
     private double currentFajrAngle = 18.0; 
     private double currentIshaAngle = 17.0;
     private int currentAsrFactor = 1; // 1=Shafii (default), 2=Hanafi
-    private String currentMethod = PrayerMethods.MWL.toUnderlyingValue(); // Menggunakan nilai enum dari file helper
+    private String currentMethod = PrayerMethods.MWL.toUnderlyingValue(); 
+    private String currentHighLatAdj = HighLatAdjustment.NONE.toUnderlyingValue(); // Default: Tidak ada penyesuaian
     
     // State yang diatur sekali oleh SetLocationDateAndInit atau CalculateAllTimes
     private double lat = Double.NaN;
@@ -84,16 +86,33 @@ public class PTC extends AndroidNonvisibleComponent {
         return t;
     }
 
-    /** Konversi Waktu Desimal (Jam.Menit) ke format HH:MM. */
+    /** Konversi Waktu Desimal (Jam.Menit) ke format HH:MM:SS (akurasi hingga detik). */
     private String floatToTime(double time) {
         if (Double.isNaN(time)) return "N/A";
 
         time = fixTime(time); 
 
         int hours = (int) Math.floor(time);
-        double minutes = Math.floor((time - hours) * 60.0);
+        double fractionalHours = time - hours;
         
-        return String.format(Locale.US, "%02d:%02d", hours, (int) minutes);
+        int minutes = (int) Math.floor(fractionalHours * 60.0);
+        double fractionalMinutes = (fractionalHours * 60.0) - minutes;
+        
+        // Calculate seconds, rounded to the nearest integer
+        int seconds = (int) Math.round(fractionalMinutes * 60.0);
+        
+        // Handle rounding up (e.g., 59 seconds rounding up to 00 minutes)
+        if (seconds == 60) {
+            minutes++;
+            seconds = 0;
+        }
+        if (minutes == 60) {
+            hours++;
+            minutes = 0;
+        }
+        hours = (int) fixTime(hours); // Ensure hours wraps around 24 if necessary
+        
+        return String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds);
     }
     
     /** Mengkonversi tanggal Gregorian ke Hari Julian. */
@@ -194,6 +213,10 @@ public class PTC extends AndroidNonvisibleComponent {
         if (cosArg > 1.0) cosArg = 1.0;
         if (cosArg < -1.0) cosArg = -1.0;
 
+        // Jika hasilnya NaN, artinya sudut matahari tidak pernah tercapai (High Latitude)
+        if (Math.abs(lat) >= 48.5 && Math.abs(cosArg) > 1.0) {
+            return Double.NaN; 
+        }
 
         double H = radToDeg(Math.acos(cosArg)); // Sudut jam (Hour Angle)
         
@@ -248,6 +271,25 @@ public class PTC extends AndroidNonvisibleComponent {
             fajrRaw = sunAngleTime(-currentFajrAngle, fixTime(fajrRaw), -1);
             asrRaw = asrTime(fixTime(asrRaw));
             ishaRaw = sunAngleTime(-currentIshaAngle, fixTime(ishaRaw), +1);
+        }
+        
+        // --- Penyesuaian Lintang Tinggi (Astronomical Rule) ---
+        if (currentHighLatAdj.equals(HighLatAdjustment.MIDNIGHT.toUnderlyingValue())) {
+            
+            // Hitung durasi malam (Sunset - Fajr)
+            double nightDuration = fixTime(fajrRaw - maghribRaw);
+            
+            // Perbaikan Fajr (Menggunakan Tengah Malam)
+            if (Double.isNaN(fajrRaw)) {
+                // Asumsi Fajr adalah tengah malam - (durasi malam / 2)
+                fajrRaw = fixTime(midday - 0.5 * nightDuration / 24.0);
+            }
+            
+            // Perbaikan Isha (Menggunakan Tengah Malam)
+            if (Double.isNaN(ishaRaw)) {
+                // Asumsi Isha adalah tengah malam + (durasi malam / 2)
+                ishaRaw = fixTime(midday + 0.5 * nightDuration / 24.0);
+            }
         }
         
         // --- Pembentukan Hasil (10 item waktu) ---
@@ -417,44 +459,49 @@ public class PTC extends AndroidNonvisibleComponent {
     /** Menyetel variabel state berdasarkan preset metode. */
     private void applyMethod(String method) {
         currentMethod = method;
-        switch (method) {
-            case "MWL": // Muslim World League (Default)
-                currentFajrAngle = 18.0;
-                currentIshaAngle = 17.0;
-                currentAsrFactor = 1; // Shafi'i
-                break;
-            case "ISNA": // Islamic Society of North America
-                currentFajrAngle = 15.0;
-                currentIshaAngle = 15.0;
-                currentAsrFactor = 1;
-                break;
-            case "EGYPT": // Egyptian General Authority of Survey
-                currentFajrAngle = 19.5;
-                currentIshaAngle = 17.5;
-                currentAsrFactor = 1;
-                break;
-            case "KARACHI": // University of Islamic Sciences, Karachi
-                currentFajrAngle = 18.0;
-                currentIshaAngle = 18.0;
-                currentAsrFactor = 1;
-                break;
-            case "CUSTOM":
-                break;
-            default:
-                // Menggunakan nilai MWL dari Enum Helper
-                applyMethod(PrayerMethods.MWL.toUnderlyingValue());
-                break;
+        // Menggunakan nilai string dari Enum Helper (toUnderlyingValue) untuk switch
+        if (method.equals(PrayerMethods.MWL.toUnderlyingValue())) {
+            currentFajrAngle = 18.0;
+            currentIshaAngle = 17.0;
+            currentAsrFactor = 1;
+        } else if (method.equals(PrayerMethods.ISNA.toUnderlyingValue())) {
+            currentFajrAngle = 15.0;
+            currentIshaAngle = 15.0;
+            currentAsrFactor = 1;
+        } else if (method.equals(PrayerMethods.EGYPT.toUnderlyingValue())) {
+            currentFajrAngle = 19.5;
+            currentIshaAngle = 17.5;
+            currentAsrFactor = 1;
+        } else if (method.equals(PrayerMethods.KARACHI.toUnderlyingValue())) {
+            currentFajrAngle = 18.0;
+            currentIshaAngle = 18.0;
+            currentAsrFactor = 1;
+        } else if (method.equals(PrayerMethods.CUSTOM.toUnderlyingValue())) {
+            // Biarkan custom angles tidak berubah
+        } else {
+            // Default ke MWL jika string tidak dikenali
+            applyMethod(PrayerMethods.MWL.toUnderlyingValue());
         }
     }
     
     // --- Fungsi Publik untuk App Inventor ---
 
     /** * Mengatur metode perhitungan waktu sholat. 
-     * Input sekarang berupa dropdown (blok helper) yang berisi MWL, ISNA, dst.
+     * Input berupa dropdown (blok helper) yang berisi MWL, ISNA, dst.
      */
     @SimpleFunction(description = "Mengatur metode perhitungan waktu sholat. Gunakan dropdown untuk memilih metode. Default adalah MWL.")
     public void SetCalculationMethod(@Options(PrayerMethods.class) String method) {
         applyMethod(method);
+    }
+    
+    /**
+     * Mengatur metode penyesuaian untuk lintang tinggi (high latitude), 
+     * yang diperlukan untuk perhitungan astronomis yang akurat di daerah ekstrem.
+     * @param adjustmentMethod Metode penyesuaian (NONE, MIDNIGHT).
+     */
+    @SimpleFunction(description = "Mengatur metode penyesuaian untuk lintang tinggi (high latitude). Pilih NONE, MIDNIGHT, atau lainnya.")
+    public void SetHighLatitudeAdjustment(@Options(HighLatAdjustment.class) String adjustmentMethod) {
+        currentHighLatAdj = adjustmentMethod;
     }
     
     /**
@@ -488,7 +535,7 @@ public class PTC extends AndroidNonvisibleComponent {
      * @param day Hari (1-31).
      * @param month Bulan (1-12).
      * @param year Tahun (e.g., 2024).
-     * @return YailList berisi waktu sholat (HH:MM), Kulminasi (Midday), dan Arah Kiblat (derajat).
+     * @return YailList berisi waktu sholat (HH:MM:SS), Kulminasi (Midday), dan Arah Kiblat (derajat).
      * Urutan: Fajr, Sunrise, Duha, Dhuhr, Asr, Maghrib, Sunset, Isha, Midday, Qibla.
      */
     @SimpleFunction(description = "Menghitung semua waktu sholat, waktu Dhuha, Kulminasi, Terbit/Tenggelam, dan Arah Kiblat. Mengembalikan daftar urutan: Fajr, Sunrise, Duha, Dhuhr, Asr, Maghrib, Sunset, Isha, Midday, Qibla. Fungsi ini juga mengatur lokasi dan tanggal untuk perhitungan individual.")

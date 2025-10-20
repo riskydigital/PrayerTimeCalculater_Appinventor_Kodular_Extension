@@ -4,10 +4,11 @@ import com.google.appinventor.components.common.OptionList;
 import java.util.HashMap;
 import java.util.Map;
 
+// --- ENUM UNTUK METODE PERHITUNGAN SHOLAT ---
+
 /**
  * Enum ini menyediakan konstanta metode perhitungan sholat 
  * dan mengimplementasikan OptionList untuk membuat dropdown di App Inventor.
- * File ini harus berada di direktori 'helpers' agar dapat diakses oleh compiler.
  */
 public enum PrayerMethods implements OptionList<String> {
     // Mendefinisikan nilai yang akan dikembalikan
@@ -23,8 +24,6 @@ public enum PrayerMethods implements OptionList<String> {
     PrayerMethods(String value) {
         this.methodValue = value;
     }
-
-    // --- Metode Wajib OptionList ---
 
     // 1. Mengembalikan nilai string yang mendasarinya (Wajib)
     public String toUnderlyingValue() {
@@ -45,3 +44,4 @@ public enum PrayerMethods implements OptionList<String> {
         return lookup.get(value);
     }
 }
+
