@@ -1,0 +1,469 @@
+package com.riskydigital.PTC; // Sesuai dengan error runtime
+
+import com.google.appinventor.components.annotations.SimpleFunction;
+import com.google.appinventor.components.annotations.SimpleObject;
+import com.google.appinventor.components.annotations.DesignerComponent;
+import com.google.appinventor.components.annotations.UsesPermissions;
+import com.google.appinventor.components.common.ComponentCategory;
+import com.google.appinventor.components.runtime.AndroidNonvisibleComponent;
+import com.google.appinventor.components.runtime.ComponentContainer;
+import com.google.appinventor.components.runtime.util.YailList;
+
+import java.util.Calendar;
+import java.util.GregorianCalendar;
+import java.util.Locale;
+
+/**
+ * Ekstensi untuk menghitung waktu sholat, waktu matahari, dan arah Kiblat.
+ * Versi ini mendukung inisialisasi state sekali di awal dan perhitungan waktu individual.
+ */
+@DesignerComponent(
+    version = 20, // Versi dinaikkan sesuai permintaan
+    description = "Kalkulator Waktu Sholat (Fajr, Dhuhr, Asr, Maghrib, Isha, Dhuha, Kulminasi, Terbit/Tenggelam) dan Arah Kiblat. Mendukung preset, sudut kustom, inisialisasi sekali, dan perhitungan individual.",
+    category = ComponentCategory.EXTENSION,
+    nonVisible = true,
+    iconName = "images/extension.png")
+@SimpleObject(external = true)
+@UsesPermissions(permissionNames = "android.permission.INTERNET")
+public class PTC extends AndroidNonvisibleComponent { 
+
+    // --- Konstanta String untuk Internal Logic ---
+    public static final String METHOD_MWL = "MWL"; 
+    public static final String METHOD_ISNA = "ISNA"; 
+    public static final String METHOD_EGYPT = "EGYPT"; 
+    public static final String METHOD_KARACHI = "KARACHI"; 
+    public static final String METHOD_CUSTOM = "CUSTOM"; 
+
+    // --- Variabel State Perhitungan ---
+    private static final double SUNRISE_SUNSET_ANGLE = 0.833; 
+    private static final double DHUHA_ANGLE = 3.0; 
+
+    // Variabel yang digunakan dalam perhitungan (nilai default adalah MWL)
+    private double currentFajrAngle = 18.0; 
+    private double currentIshaAngle = 17.0;
+    private int currentAsrFactor = 1; // 1=Shafii (default), 2=Hanafi
+    private String currentMethod = METHOD_MWL; 
+    
+    // State yang diatur sekali oleh SetLocationDateAndInit atau CalculateAllTimes
+    private double lat = Double.NaN;
+    private double lon = Double.NaN;
+    private double timezoneOffset = Double.NaN;
+    private int day = 1, month = 1, year = 1970;
+    private Calendar calendar = new GregorianCalendar(1970, 0, 1);
+
+    // --- Konstruktor ---
+
+    public PTC(ComponentContainer container) { 
+        super(container.$form());
+    }
+
+    // --- Fungsi Bantuan Matematika dan Waktu (Helper Functions) ---
+
+    /** Konversi sudut ke radian. */
+    private double degToRad(double angle) {
+        return Math.PI * angle / 180.0;
+    }
+
+    /** Konversi radian ke sudut. */
+    private double radToDeg(double angle) {
+        return angle * 180.0 / Math.PI;
+    }
+
+    /** Memperbaiki sudut agar berada di antara 0 dan 360. */
+    private double fixAngle(double a) {
+        a = a - 360.0 * Math.floor(a / 360.0); 
+        a = a < 0 ? a + 360.0 : a;
+        return a;
+    }
+    
+    /** Memperbaiki waktu agar berada di antara 0 dan 24. */
+    private double fixTime(double t) {
+        t = t - 24.0 * Math.floor(t / 24.0);
+        t = t < 0 ? t + 24.0 : t;
+        return t;
+    }
+
+    /** Konversi Waktu Desimal (Jam.Menit) ke format HH:MM. */
+    private String floatToTime(double time) {
+        if (Double.isNaN(time)) return "N/A";
+
+        time = fixTime(time); 
+
+        int hours = (int) Math.floor(time);
+        double minutes = Math.floor((time - hours) * 60.0);
+        
+        return String.format(Locale.US, "%02d:%02d", hours, (int) minutes);
+    }
+    
+    /** Mengkonversi tanggal Gregorian ke Hari Julian. */
+    private double dateToJDN(int day, int month, int year) {
+        if (year < 0) year++;
+        if (month <= 2) {
+            year--;
+            month += 12;
+        }
+        double A = Math.floor(year / 100.0);
+        double B = 2 - A + Math.floor(A / 4.0);
+        return Math.floor(365.25 * (year + 4716.0)) + Math.floor(30.6001 * (month + 1)) + day + B - 1524.5;
+    }
+
+    /** Hitung Deklinasi Matahari. */
+    private double sunDeclination(double jd) {
+        double D = jd - 2451545.0; 
+        double g = fixAngle(357.529 + 0.98560028 * D); 
+        double q = fixAngle(280.459 + 0.98564736 * D); 
+        double L = fixAngle(q + 1.915 * Math.sin(degToRad(g)) + 0.020 * Math.sin(degToRad(2 * g))); 
+        double e = 23.439 - 0.00000036 * D; 
+        double d = radToDeg(Math.asin(Math.sin(degToRad(e)) * Math.sin(degToRad(L)))); 
+        return d;
+    }
+
+    /** Hitung Persamaan Waktu (Equation of Time). */
+    private double equationOfTime(double jd) {
+        double D = jd - 2451545.0; 
+        double g = fixAngle(357.529 + 0.98560028 * D);
+        double q = fixAngle(280.459 + 0.98564736 * D);
+        double L = fixAngle(q + 1.915 * Math.sin(degToRad(g)) + 0.020 * Math.sin(degToRad(2 * g)));
+        double e = 23.439 - 0.00000036 * D;
+
+        double y = Math.tan(degToRad(e / 2.0));
+        y *= y;
+
+        double sin2L = Math.sin(degToRad(2.0 * L));
+        double sin4L = Math.sin(degToRad(4.0 * L));
+        double cos2L = Math.cos(degToRad(2.0 * L));
+
+        double E = y * sin2L - 2.0 * 0.017 * Math.sin(degToRad(g)) + 4.0 * y * 0.0049 * cos2L;
+        E = radToDeg(E);
+        return E; 
+    }
+    
+    // --- Fungsi Inisialisasi State ---
+    
+    /** Inisialisasi lokasi, tanggal, dan zona waktu untuk semua perhitungan sholat berikutnya. */
+    @SimpleFunction(description = "Inisialisasi lokasi, tanggal, dan zona waktu untuk semua perhitungan sholat berikutnya.")
+    public void SetLocationDateAndInit(double latitude, double longitude, double timezone, int day, int month, int year) {
+        this.lat = latitude;
+        this.lon = longitude;
+        this.timezoneOffset = timezone;
+        this.day = day;
+        this.month = month; 
+        this.year = year;
+        
+        // Inisialisasi Calendar (perlu -1 untuk bulan karena Calendar menggunakan 0-11)
+        try {
+            this.calendar = new GregorianCalendar(year, month - 1, day);
+        } catch (Exception e) {
+            // Jika terjadi error tanggal, biarkan state tetap (default)
+        }
+    }
+
+
+    // --- Fungsi Perhitungan Raw (Private) ---
+
+    /** Hitung waktu transisi (Midday/Kulminasi). */
+    private double timeTransit(double angle) {
+        double time = 12.0 + timezoneOffset - lon / 15.0 - equationOfTime(dateToJDN(day, month, year)) / 60.0;
+        return time;
+    }
+    
+    private double getRawMiddayTime() {
+        return timeTransit(0.0);
+    }
+
+    /** * Hitung waktu terbit/tenggelam atau sholat (subh/isha) untuk sudut tertentu. 
+     * @param angle Sudut matahari (negatif untuk Fajr/Isha).
+     * @param time Waktu estimasi (midday).
+     * @param direction Arah (-1: Pagi, +1: Sore)
+     */
+    private double sunAngleTime(double angle, double time, int direction) {
+        double decl = sunDeclination(dateToJDN(day, month, year) + time / 24.0);
+        double latRad = degToRad(lat);
+        double declRad = degToRad(decl);
+        double angleRad = degToRad(angle);
+
+        double term1 = Math.sin(angleRad) - Math.sin(latRad) * Math.sin(declRad);
+        double term2 = Math.cos(latRad) * Math.cos(declRad);
+        
+        if (term2 < 1.0e-6) {
+             return Double.NaN;
+        }
+
+        double cosArg = term1 / term2;
+        if (cosArg > 1.0) cosArg = 1.0;
+        if (cosArg < -1.0) cosArg = -1.0;
+
+
+        double H = radToDeg(Math.acos(cosArg)); // Sudut jam (Hour Angle)
+        
+        // Menggunakan 'direction' (-1 atau +1) untuk menentukan waktu sebelum atau sesudah Midday
+        return timeTransit(0.0) + direction * H / 15.0; 
+    }
+
+    /** Hitung waktu Asar. */
+    private double asrTime(double time) {
+        double decl = sunDeclination(dateToJDN(day, month, year) + time / 24.0);
+        double declRad = degToRad(decl);
+        double latRad = degToRad(lat);
+        
+        // Rumus Asr (Menggunakan currentAsrFactor: 1=Shafii, 2=Hanafi)
+        double angle_asr = radToDeg(Math.atan(1.0 / (currentAsrFactor + Math.tan(Math.abs(latRad - declRad)))));
+        
+        double H = radToDeg(Math.acos((Math.sin(degToRad(angle_asr)) - Math.sin(latRad) * Math.sin(declRad)) / (Math.cos(latRad) * Math.cos(declRad))));
+        
+        return timeTransit(0.0) + H / 15.0;
+    }
+    
+    // --- Public Individual Calculation Functions (Menggunakan State) ---
+
+    @SimpleFunction(description = "Menghitung waktu Midday (Kulminasi Matahari) berdasarkan pengaturan terakhir.")
+    public String CalculateMiddayTime() {
+        return floatToTime(getRawMiddayTime());
+    }
+
+    @SimpleFunction(description = "Menghitung waktu Subuh (Fajr) berdasarkan pengaturan terakhir.")
+    public String CalculateFajrTime() {
+        double midday = getRawMiddayTime();
+        double rawTime = sunAngleTime(-currentFajrAngle, midday, -1);
+        
+        // Iteration
+        for (int i = 0; i < 3; i++) {
+            rawTime = sunAngleTime(-currentFajrAngle, fixTime(rawTime), -1);
+        }
+        return floatToTime(rawTime);
+    }
+
+    @SimpleFunction(description = "Menghitung waktu Terbit Matahari (Sunrise) berdasarkan pengaturan terakhir.")
+    public String CalculateSunriseTime() {
+        double midday = getRawMiddayTime();
+        return floatToTime(sunAngleTime(-SUNRISE_SUNSET_ANGLE, midday, -1));
+    }
+    
+    @SimpleFunction(description = "Menghitung waktu Dhuha berdasarkan pengaturan terakhir.")
+    public String CalculateDhuhaTime() {
+        double midday = getRawMiddayTime();
+        return floatToTime(sunAngleTime(-DHUHA_ANGLE, midday, -1));
+    }
+
+    @SimpleFunction(description = "Menghitung waktu Zuhur (Dhuhr) berdasarkan pengaturan terakhir. Sama dengan Midday.")
+    public String CalculateDhuhrTime() {
+        return floatToTime(getRawMiddayTime());
+    }
+
+    @SimpleFunction(description = "Menghitung waktu Ashar (Asr) berdasarkan pengaturan terakhir.")
+    public String CalculateAsrTime() {
+        double midday = getRawMiddayTime();
+        double rawTime = asrTime(midday);
+        
+        // Iteration
+        for (int i = 0; i < 3; i++) {
+            rawTime = asrTime(fixTime(rawTime));
+        }
+        return floatToTime(rawTime);
+    }
+
+    @SimpleFunction(description = "Menghitung waktu Maghrib berdasarkan pengaturan terakhir. Sama dengan Sunset.")
+    public String CalculateMaghribTime() {
+        double midday = getRawMiddayTime();
+        // Maghrib is equal to Sunset
+        return floatToTime(sunAngleTime(-SUNRISE_SUNSET_ANGLE, midday, +1));
+    }
+
+    @SimpleFunction(description = "Menghitung waktu Tenggelam Matahari (Sunset) berdasarkan pengaturan terakhir.")
+    public String CalculateSunsetTime() {
+        double midday = getRawMiddayTime();
+        return floatToTime(sunAngleTime(-SUNRISE_SUNSET_ANGLE, midday, +1));
+    }
+    
+    @SimpleFunction(description = "Menghitung waktu Isya (Isha) berdasarkan pengaturan terakhir.")
+    public String CalculateIshaTime() {
+        double midday = getRawMiddayTime();
+        double rawTime = sunAngleTime(-currentIshaAngle, midday, +1);
+        
+        // Iteration
+        for (int i = 0; i < 3; i++) {
+            rawTime = sunAngleTime(-currentIshaAngle, fixTime(rawTime), +1);
+        }
+        return floatToTime(rawTime);
+    }
+
+
+    // --- Preset Metode Sholat (Tidak Berubah) ---
+    
+    /** Menyetel variabel state berdasarkan preset metode. */
+    private void applyMethod(String method) {
+        currentMethod = method;
+        switch (method) {
+            case METHOD_MWL: // Muslim World League (Default)
+                currentFajrAngle = 18.0;
+                currentIshaAngle = 17.0;
+                currentAsrFactor = 1; // Shafi'i
+                break;
+            case METHOD_ISNA: // Islamic Society of North America
+                currentFajrAngle = 15.0;
+                currentIshaAngle = 15.0;
+                currentAsrFactor = 1;
+                break;
+            case METHOD_EGYPT: // Egyptian General Authority of Survey
+                currentFajrAngle = 19.5;
+                currentIshaAngle = 17.5;
+                currentAsrFactor = 1;
+                break;
+            case METHOD_KARACHI: // University of Islamic Sciences, Karachi
+                currentFajrAngle = 18.0;
+                currentIshaAngle = 18.0;
+                currentAsrFactor = 1;
+                break;
+            case METHOD_CUSTOM:
+                break;
+            default:
+                applyMethod(METHOD_MWL);
+                break;
+        }
+    }
+    
+    // --- Fungsi Publik untuk App Inventor (Blok Konstanta) ---
+
+    /** Mengembalikan konstanta string untuk metode Muslim World League (MWL). */
+    @SimpleFunction(description = "Konstanta string untuk metode Muslim World League (MWL).")
+    public String MethodMWL() {
+        return METHOD_MWL;
+    }
+    
+    /** Mengembalikan konstanta string untuk metode Islamic Society of North America (ISNA). */
+    @SimpleFunction(description = "Konstanta string untuk metode ISNA.")
+    public String MethodISNA() {
+        return METHOD_ISNA;
+    }
+    
+    /** Mengembalikan konstanta string untuk metode Egyptian General Authority of Survey (EGYPT). */
+    @SimpleFunction(description = "Konstanta string untuk metode EGYPT.")
+    public String MethodEGYPT() {
+        return METHOD_EGYPT;
+    }
+    
+    /** Mengembalikan konstanta string untuk metode University of Islamic Sciences, Karachi (KARACHI). */
+    @SimpleFunction(description = "Konstanta string untuk metode KARACHI.")
+    public String MethodKARACHI() {
+        return METHOD_KARACHI;
+    }
+    
+    /** Mengembalikan konstanta string untuk metode Kustom (CUSTOM). */
+    @SimpleFunction(description = "Konstanta string untuk metode Kustom (CUSTOM).")
+    public String MethodCUSTOM() {
+        return METHOD_CUSTOM;
+    }
+
+    /** * Mengatur metode perhitungan waktu sholat yang akan digunakan. 
+     * Input harus berupa Blok Metode (misalnya MethodMWL()). Default adalah MWL.
+     */
+    @SimpleFunction(description = "Mengatur metode perhitungan waktu sholat. Gunakan Blok Fungsi Method... sebagai input. Default adalah MWL.")
+    public void SetCalculationMethod(String method) {
+        applyMethod(method);
+    }
+    
+    /**
+     * Mengatur sudut kustom untuk Fajr dan Isha, serta Faktor Asr.
+     * Secara otomatis beralih ke metode CUSTOM.
+     * @param fajrAngle Sudut matahari Subuh (misal, 18.0).
+     * @param ishaAngle Sudut matahari Isya (misal, 17.0).
+     * @param asrFactor Faktor Asr (1 untuk Shafii/Maliki/Hanbali, 2 untuk Hanafi).
+     */
+    @SimpleFunction(description = "Mengatur sudut kustom untuk Fajr dan Isha, serta Faktor Asr (1=Shafii, 2=Hanafi). Otomatis beralih ke metode CUSTOM.")
+    public void SetCustomAngles(double fajrAngle, double ishaAngle, int asrFactor) {
+        currentFajrAngle = fajrAngle;
+        currentIshaAngle = ishaAngle;
+        currentAsrFactor = asrFactor;
+        currentMethod = METHOD_CUSTOM;
+    }
+    
+    /** Fungsi Debug: Mengembalikan sudut Fajr dan Isha yang sedang aktif serta faktor Asr. */
+    @SimpleFunction(description = "Mengembalikan list: [Fajr Angle, Isha Angle, Asr Factor] yang sedang digunakan.")
+    public YailList GetActiveAngles() {
+        return YailList.makeList(new Double[]{currentFajrAngle, currentIshaAngle, (double)currentAsrFactor});
+    }
+
+
+    /**
+     * Menghitung dan mengembalikan semua waktu sholat, waktu matahari, dan arah Kiblat.
+     * Fungsi ini juga menginisialisasi lokasi/tanggal yang akan digunakan oleh fungsi perhitungan individual.
+     * @param latitude Lintang lokasi (derajat).
+     * @param longitude Bujur lokasi (derajat).
+     * @param timezone Zona waktu dalam jam (misalnya 7.0 untuk WIB).
+     * @param day Hari (1-31).
+     * @param month Bulan (1-12).
+     * @param year Tahun (e.g., 2024).
+     * @return YailList berisi waktu sholat (HH:MM), Kulminasi (Midday), dan Arah Kiblat (derajat).
+     * Urutan: Fajr, Sunrise, Duha, Dhuhr, Asr, Maghrib, Sunset, Isha, Midday, Qibla.
+     */
+    @SimpleFunction(description = "Menghitung semua waktu sholat, waktu Dhuha, Kulminasi, Terbit/Tenggelam, dan Arah Kiblat. Mengembalikan daftar urutan: Fajr, Sunrise, Duha, Dhuhr, Asr, Maghrib, Sunset, Isha, Midday, Qibla. Fungsi ini juga mengatur lokasi dan tanggal untuk perhitungan individual.")
+    public YailList CalculateAllTimes(double latitude, double longitude, double timezone, int day, int month, int year) {
+        
+        // 1. Inisialisasi State (agar perhitungan individual selanjutnya valid)
+        SetLocationDateAndInit(latitude, longitude, timezone, day, month, year);
+
+        // 2. Kalkulasi Raw Times
+        double midday = getRawMiddayTime();
+        
+        // Initial Raw Times
+        double fajrRaw = sunAngleTime(-currentFajrAngle, midday, -1); 
+        double sunriseRaw = sunAngleTime(-SUNRISE_SUNSET_ANGLE, midday, -1);
+        double dhuhaRaw = sunAngleTime(-DHUHA_ANGLE, midday, -1);
+        double dhuhrRaw = midday; 
+        double asrRaw = asrTime(midday);
+        double maghribRaw = sunAngleTime(-SUNRISE_SUNSET_ANGLE, midday, +1);
+        double sunsetRaw = maghribRaw; // Sunset is Maghrib
+        double ishaRaw = sunAngleTime(-currentIshaAngle, midday, +1); 
+
+        // 3. Iterasi untuk Akurasi
+        for (int i = 0; i < 3; i++) {
+            fajrRaw = sunAngleTime(-currentFajrAngle, fixTime(fajrRaw), -1);
+            asrRaw = asrTime(fixTime(asrRaw));
+            ishaRaw = sunAngleTime(-currentIshaAngle, fixTime(ishaRaw), +1);
+        }
+        
+        // 4. Arah Kiblat
+        double qiblaAngle = calculateQibla(latitude, longitude);
+
+        // --- 5. Pembentukan Hasil ---
+        String[] results = {
+            floatToTime(fajrRaw), 
+            floatToTime(sunriseRaw), 
+            floatToTime(dhuhaRaw), 
+            floatToTime(dhuhrRaw), 
+            floatToTime(asrRaw), 
+            floatToTime(maghribRaw), 
+            floatToTime(sunsetRaw), 
+            floatToTime(ishaRaw), 
+            floatToTime(midday), 
+            String.format(Locale.US, "%.2f", fixAngle(qiblaAngle))
+        };
+        
+        return YailList.makeList(results);
+    }
+    
+    /**
+     * Menghitung arah Kiblat dari lokasi tertentu.
+     */
+    @SimpleFunction(description = "Menghitung arah Kiblat (dalam derajat dari Utara) dari lintang dan bujur yang diberikan.")
+    public double calculateQibla(double lat, double lon) {
+        // Koordinat Mekah (Ka'bah)
+        final double latKaaba = 21.4225; 
+        final double lonKaaba = 39.8262; 
+
+        double latRad = degToRad(lat);
+        double lonRad = degToRad(lon);
+        double latKaabaRad = degToRad(latKaaba);
+        double lonKaabaRad = degToRad(lonKaaba);
+        
+        double lonDiff = lonKaabaRad - lonRad;
+
+        // Formula Arah Kiblat (Menggunakan Atan2)
+        double qiblaAngle = radToDeg(Math.atan2(
+            Math.sin(lonDiff),
+            (Math.cos(latRad) * Math.tan(latKaabaRad)) - (Math.sin(latRad) * Math.cos(lonDiff))
+        ));
+
+        return fixAngle(qiblaAngle);
+    }
+}
