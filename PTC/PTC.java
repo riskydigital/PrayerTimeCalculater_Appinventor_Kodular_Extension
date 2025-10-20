@@ -13,6 +13,7 @@ import com.google.appinventor.components.runtime.util.YailList;
 // Import Helper Enums dari paket baru
 import com.riskydigital.PTC.helpers.PrayerMethods; 
 import com.riskydigital.PTC.helpers.HighLatAdjustment; 
+import com.riskydigital.PTC.helpers.TimeFormat; // Import baru
 
 import java.util.Calendar;
 import java.util.GregorianCalendar;
@@ -27,8 +28,8 @@ import java.text.SimpleDateFormat;
  * Versi ini mendukung inisialisasi state sekali di awal dan perhitungan waktu individual, serta kalkulasi bulanan dan tahunan.
  */
 @DesignerComponent(
-    version = 120, // Versi dinaikkan untuk akurasi detik
-    description = "Kalkulator Waktu Sholat (Fajr, Dhuhr, Asr, Maghrib, Isha, Dhuha, Kulminasi, Terbit/Tenggelam) dan Arah Kiblat. Mendukung preset, sudut kustom, inisialisasi sekali, perhitungan individual, bulanan, dan tahunan, serta penyesuaian lintang tinggi. Akurasi waktu hingga detik.",
+    version = 121, // Versi dinaikkan untuk kontrol format waktu
+    description = "Kalkulator Waktu Sholat (Fajr, Dhuhr, Asr, Maghrib, Isha, Dhuha, Kulminasi, Terbit/Tenggelam) dan Arah Kiblat. Mendukung preset, sudut kustom, inisialisasi sekali, perhitungan individual, bulanan, dan tahunan, serta penyesuaian lintang tinggi. Akurasi waktu dapat dipilih (HH:MM atau HH:MM:SS).",
     category = ComponentCategory.EXTENSION,
     nonVisible = true,
     iconName = "images/extension.png")
@@ -46,6 +47,7 @@ public class PTC extends AndroidNonvisibleComponent {
     private int currentAsrFactor = 1; // 1=Shafii (default), 2=Hanafi
     private String currentMethod = PrayerMethods.MWL.toUnderlyingValue(); 
     private String currentHighLatAdj = HighLatAdjustment.NONE.toUnderlyingValue(); // Default: Tidak ada penyesuaian
+    private String currentOutputFormat = TimeFormat.HH_MM_SS.toUnderlyingValue(); // Default: Akurasi hingga detik
     
     // State yang diatur sekali oleh SetLocationDateAndInit atau CalculateAllTimes
     private double lat = Double.NaN;
@@ -86,33 +88,47 @@ public class PTC extends AndroidNonvisibleComponent {
         return t;
     }
 
-    /** Konversi Waktu Desimal (Jam.Menit) ke format HH:MM:SS (akurasi hingga detik). */
+    /** Konversi Waktu Desimal (Jam.Menit) ke format HH:MM atau HH:MM:SS berdasarkan state. */
     private String floatToTime(double time) {
         if (Double.isNaN(time)) return "N/A";
 
         time = fixTime(time); 
 
-        int hours = (int) Math.floor(time);
-        double fractionalHours = time - hours;
-        
-        int minutes = (int) Math.floor(fractionalHours * 60.0);
-        double fractionalMinutes = (fractionalHours * 60.0) - minutes;
-        
-        // Calculate seconds, rounded to the nearest integer
-        int seconds = (int) Math.round(fractionalMinutes * 60.0);
-        
-        // Handle rounding up (e.g., 59 seconds rounding up to 00 minutes)
-        if (seconds == 60) {
-            minutes++;
-            seconds = 0;
+        if (currentOutputFormat.equals(TimeFormat.HH_MM.toUnderlyingValue())) {
+            // HH:MM Format: Bulatkan ke menit terdekat
+            
+            // Tambahkan setengah menit (0.5 / 60.0 jam) untuk pembulatan
+            time += (0.5 / 60.0); 
+            time = fixTime(time); 
+
+            int hours = (int) Math.floor(time);
+            int minutes = (int) Math.floor((time - hours) * 60.0);
+            
+            return String.format(Locale.US, "%02d:%02d", hours, minutes);
+        } else {
+            // HH:MM:SS Format
+            int hours = (int) Math.floor(time);
+            double fractionalHours = time - hours;
+            
+            int minutes = (int) Math.floor(fractionalHours * 60.0);
+            double fractionalMinutes = (fractionalHours * 60.0) - minutes;
+            
+            // Hitung detik, dibulatkan ke bilangan bulat terdekat
+            int seconds = (int) Math.round(fractionalMinutes * 60.0);
+            
+            // Tangani pembulatan ke atas
+            if (seconds == 60) {
+                minutes++;
+                seconds = 0;
+            }
+            if (minutes == 60) {
+                hours++;
+                minutes = 0;
+            }
+            hours = (int) fixTime(hours); // Pastikan jam berada dalam rentang 0-23
+            
+            return String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds);
         }
-        if (minutes == 60) {
-            hours++;
-            minutes = 0;
-        }
-        hours = (int) fixTime(hours); // Ensure hours wraps around 24 if necessary
-        
-        return String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds);
     }
     
     /** Mengkonversi tanggal Gregorian ke Hari Julian. */
@@ -504,6 +520,15 @@ public class PTC extends AndroidNonvisibleComponent {
         currentHighLatAdj = adjustmentMethod;
     }
     
+    /**
+     * Mengatur format output waktu (HH:MM atau HH:MM:SS).
+     * @param format HH_MM untuk akurasi menit, HH_MM_SS untuk akurasi detik.
+     */
+    @SimpleFunction(description = "Mengatur format output waktu. Pilih HH_MM (menit) atau HH_MM_SS (detik). Default adalah HH:MM:SS.")
+    public void SetTimeFormat(@Options(TimeFormat.class) String format) {
+        currentOutputFormat = format;
+    }
+
     /**
      * Mengatur sudut kustom untuk Fajr dan Isha, serta Faktor Asr.
      * Secara otomatis beralih ke metode CUSTOM.
